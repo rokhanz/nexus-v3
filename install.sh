@@ -11,7 +11,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
@@ -20,8 +19,12 @@ NEXUS_VERSION="latest"
 WORKDIR="$HOME/nexus"
 NEXUS_CONFIG_DIR="$HOME/.nexus"
 CREDENTIALS_FILE="$HOME/.nexus/credentials.json"
-DOCKER_IMAGE="nexusxyz/nexus"
+NEXUS_CLI_URL="https://cli.nexus.xyz/"
+DOCKER_IMAGE="nexusxyz/nexus-cli"
 LOG_FILE="$HOME/nexus-install.log"
+
+# Installation mode (will be set based on compatibility)
+INSTALL_MODE=""  # "native" or "docker"
 
 # Nexus Network Configuration (Testnet 3)
 CHAIN_ID="3940"
@@ -51,90 +54,90 @@ check_root() {
         read -p "Continue anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_color "$CYAN" "Exiting installation..."
             exit 1
         fi
     fi
+}
+
+# Display banner
+display_banner() {
+    clear
+    print_color "$CYAN" "╔═══════════════════════════════════════════════════════════════╗"
+    print_color "$CYAN" "║                    NEXUS V3 INSTALLATION                      ║"
+    print_color "$CYAN" "║                                                               ║"
+    print_color "$CYAN" "║  ██████╗  ██████╗ ██╗  ██╗██╗  ██╗ █████╗ ███╗   ██╗███████╗ ║"
+    print_color "$CYAN" "║  ██╔══██╗██╔═══██╗██║ ██╔╝██║  ██║██╔══██╗████╗  ██║╚══███╔╝ ║"
+    print_color "$CYAN" "║  ██████╔╝██║   ██║█████╔╝ ███████║███████║██╔██╗ ██║  ███╔╝  ║"
+    print_color "$CYAN" "║  ██╔══██╗██║   ██║██╔═██╗ ██╔══██║██╔══██║██║╚██╗██║ ███╔╝   ║"
+    print_color "$CYAN" "║  ██║  ██║╚██████╔╝██║  ██╗██║  ██║██║  ██║██║ ╚████║███████╗ ║"
+    print_color "$CYAN" "║  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝ ║"
+    print_color "$CYAN" "║                                                               ║"
+    print_color "$CYAN" "║          🚀 Nexus CLI Installer v3.0.0 • by Rokhanz 🇮🇩      ║"
+    print_color "$CYAN" "╚═══════════════════════════════════════════════════════════════╝"
+    echo
 }
 
 # Check system requirements
 check_requirements() {
     print_color "$BLUE" "🔍 Checking system requirements..."
     
-    # Check OS
-    if [[ ! -f /etc/os-release ]]; then
-        print_color "$RED" "❌ Unable to detect OS. This script supports Linux only."
-        exit 1
+    local missing_tools=()
+    
+    # Check for curl or wget
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        missing_tools+=("curl or wget")
     fi
     
-    # Check available disk space (at least 10GB)
-    available_space=$(df "$HOME" | awk 'NR==2 {print $4}')
-    required_space=10485760  # 10GB in KB
+    # Check for basic tools
+    for tool in git bash; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools+=("$tool")
+        fi
+    done
     
-    if [[ $available_space -lt $required_space ]]; then
-        print_color "$RED" "❌ Insufficient disk space. At least 10GB required."
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        print_color "$RED" "❌ Missing required tools: ${missing_tools[*]}"
+        print_color "$YELLOW" "Please install the missing tools and run again."
         exit 1
-    fi
-    
-    # Check memory (at least 2GB)
-    total_mem=$(free -m | awk 'NR==2{print $2}')
-    if [[ $total_mem -lt 1800 ]]; then
-        print_color "$YELLOW" "⚠️  Warning: Less than 2GB RAM detected. Performance may be affected."
     fi
     
     print_color "$GREEN" "✅ System requirements check passed"
     log "System requirements verified"
 }
 
-# Install Docker if not present
+# Install Docker if needed
 install_docker() {
-    if command -v docker &> /dev/null; then
+    if command -v docker >/dev/null 2>&1; then
+        local docker_version
+        docker_version=$(docker --version 2>/dev/null | head -n1)
         print_color "$GREEN" "✅ Docker is already installed"
-        log "Docker found: $(docker --version)"
+        log "Docker found: $docker_version"
         return 0
     fi
     
-    print_color "$BLUE" "🐳 Installing Docker..."
-    log "Starting Docker installation"
+    print_color "$BLUE" "📦 Installing Docker..."
     
-    # Detect OS and install Docker accordingly
-    if [[ -f /etc/debian_version ]]; then
-        # Debian/Ubuntu
-        sudo apt-get update
-        sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-        
-        # Add Docker's official GPG key
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        
-        # Add Docker repository
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        # Install Docker
-        sudo apt-get update
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-        
-    elif [[ -f /etc/redhat-release ]]; then
-        # CentOS/RHEL/Fedora
-        sudo yum install -y yum-utils
-        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        sudo yum install -y docker-ce docker-ce-cli containerd.io
-        
-    else
-        print_color "$RED" "❌ Unsupported OS for automatic Docker installation"
-        print_color "$YELLOW" "Please install Docker manually and run this script again"
-        exit 1
+    # Install Docker using official script
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://get.docker.com -o get-docker.sh
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O get-docker.sh https://get.docker.com
     fi
     
-    # Start and enable Docker
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    
-    # Add user to docker group
-    sudo usermod -aG docker "$USER"
-    
-    print_color "$GREEN" "✅ Docker installed successfully"
-    print_color "$YELLOW" "⚠️  Please log out and log back in for Docker group changes to take effect"
-    log "Docker installation completed"
+    if [[ -f get-docker.sh ]]; then
+        sudo sh get-docker.sh
+        rm get-docker.sh
+        
+        # Add current user to docker group
+        sudo usermod -aG docker "$USER"
+        
+        print_color "$GREEN" "✅ Docker installed successfully"
+        print_color "$YELLOW" "⚠️  You may need to log out and back in for docker permissions to take effect"
+        log "Docker installed and user added to docker group"
+    else
+        print_color "$RED" "❌ Failed to download Docker installer"
+        exit 1
+    fi
 }
 
 # Create necessary directories
@@ -145,104 +148,268 @@ create_directories() {
     mkdir -p "$WORKDIR/data"
     mkdir -p "$WORKDIR/logs"
     mkdir -p "$WORKDIR/config"
+    mkdir -p "$NEXUS_CONFIG_DIR"
     
     print_color "$GREEN" "✅ Directories created"
     log "Directory structure created at $WORKDIR"
 }
 
-# Pull Docker image
-pull_docker_image() {
-    print_color "$BLUE" "📥 Pulling Nexus Docker image..."
+# Install Nexus CLI
+install_nexus_cli() {
+    print_color "$BLUE" "📥 Installing Nexus CLI..."
     
-    if docker pull "$DOCKER_IMAGE:$NEXUS_VERSION"; then
-        print_color "$GREEN" "✅ Docker image pulled successfully"
-        log "Docker image $DOCKER_IMAGE:$NEXUS_VERSION pulled"
+    # Check if nexus-network command already exists
+    if command -v nexus-network >/dev/null 2>&1; then
+        print_color "$YELLOW" "⚠️  Nexus CLI already installed, updating..."
+        log "Nexus CLI found, proceeding with update"
+    fi
+    
+    # Download and install Nexus CLI using official script
+    if curl -fsSL "$NEXUS_CLI_URL" | sh; then
+        print_color "$GREEN" "✅ Nexus CLI installed successfully"
+        log "Nexus CLI installed from $NEXUS_CLI_URL"
+        
+        # Source shell configuration to make nexus-network available
+        if [[ -f "$HOME/.bashrc" ]]; then
+            # shellcheck disable=SC1091
+            source "$HOME/.bashrc" 2>/dev/null || true
+        fi
+        if [[ -f "$HOME/.zshrc" ]]; then
+            # shellcheck disable=SC1091
+            source "$HOME/.zshrc" 2>/dev/null || true
+        fi
+        
+        # Verify installation
+        if command -v nexus-network >/dev/null 2>&1; then
+            local version
+            version=$(nexus-network --version 2>/dev/null || echo "unknown")
+            print_color "$GREEN" "✅ Nexus CLI verified: $version"
+            log "Nexus CLI verification successful: $version"
+            INSTALL_MODE="native"
+        else
+            print_color "$YELLOW" "⚠️  CLI installed but may require shell restart"
+            log "WARNING: CLI installed but command not immediately available"
+            INSTALL_MODE="native"
+        fi
     else
-        print_color "$RED" "❌ Failed to pull Docker image"
-        log "ERROR: Failed to pull Docker image"
+        print_color "$RED" "❌ Failed to install Nexus CLI"
+        log "ERROR: Failed to install Nexus CLI from $NEXUS_CLI_URL"
         exit 1
     fi
+}
+
+# Test Nexus CLI compatibility
+test_nexus_compatibility() {
+    print_color "$BLUE" "🧪 Testing Nexus CLI compatibility..."
+    
+    if [[ "$INSTALL_MODE" != "native" ]]; then
+        print_color "$YELLOW" "⚠️  Skipping compatibility test - CLI not installed natively"
+        return 0
+    fi
+    
+    # Test if nexus-network can run without crashing
+    local test_result=0
+    if timeout 10s nexus-network --help >/dev/null 2>&1; then
+        print_color "$GREEN" "✅ Nexus CLI compatibility test passed"
+        log "Nexus CLI compatibility test successful"
+        INSTALL_MODE="native"
+    else
+        test_result=$?
+        print_color "$YELLOW" "⚠️  Nexus CLI compatibility test failed (exit code: $test_result)"
+        print_color "$YELLOW" "This VPS may not support native Nexus CLI (common on some cloud providers)"
+        log "WARNING: Nexus CLI compatibility test failed - using Docker fallback"
+        
+        # Ask user preference
+        echo
+        print_color "$CYAN" "Available options:"
+        echo "1. Use Docker-based Nexus CLI (Recommended for VPS compatibility)"
+        echo "2. Continue with native CLI (may have issues)"
+        echo "3. Exit installation"
+        echo
+        
+        read -p "Choose option (1-3): " compat_choice
+        
+        case $compat_choice in
+            1)
+                print_color "$BLUE" "🐳 Switching to Docker-based installation..."
+                INSTALL_MODE="docker"
+                install_docker_nexus
+                ;;
+            2)
+                print_color "$YELLOW" "⚠️  Continuing with native CLI (may experience crashes)"
+                INSTALL_MODE="native"
+                ;;
+            3)
+                print_color "$CYAN" "Installation cancelled by user"
+                exit 0
+                ;;
+            *)
+                print_color "$YELLOW" "Invalid choice. Defaulting to Docker-based installation."
+                INSTALL_MODE="docker"
+                install_docker_nexus
+                ;;
+        esac
+    fi
+}
+
+# Install Docker-based Nexus CLI
+install_docker_nexus() {
+    print_color "$BLUE" "🐳 Setting up Docker-based Nexus CLI..."
+    
+    # Ensure Docker is available
+    if ! command -v docker >/dev/null 2>&1; then
+        print_color "$RED" "❌ Docker is required for Docker-based installation"
+        exit 1
+    fi
+    
+    # Create Docker wrapper script
+    cat > "$HOME/.nexus/bin/nexus-cli" << 'EOF'
+#!/bin/bash
+
+# Docker-based Nexus CLI wrapper
+DOCKER_IMAGE="nexusxyz/nexus-cli:latest"
+
+# Ensure docker image is available
+if ! docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
+    echo "⬇️  Pulling Nexus CLI Docker image..."
+    docker pull "$DOCKER_IMAGE" || {
+        echo "❌ Failed to pull Docker image. Using fallback method..."
+        # Create a minimal Docker image if official doesn't exist
+        docker run --rm -v "$HOME/.nexus:/root/.nexus" ubuntu:22.04 bash -c "
+            apt-get update -qq && apt-get install -y curl
+            cd /root/.nexus
+            curl -fsSL https://cli.nexus.xyz/ | sh
+        "
+        DOCKER_IMAGE="ubuntu:22.04"
+    fi
+fi
+
+# Mount nexus config directory and run command
+docker run --rm -it \
+    -v "$HOME/.nexus:/root/.nexus" \
+    -v "$HOME/nexus:/root/nexus" \
+    --network host \
+    "$DOCKER_IMAGE" \
+    nexus-cli "$@"
+EOF
+    
+    chmod +x "$HOME/.nexus/bin/nexus-cli"
+    
+    # Create nexus-network alias
+    ln -sf "$HOME/.nexus/bin/nexus-cli" "$HOME/.nexus/bin/nexus-network"
+    
+    print_color "$GREEN" "✅ Docker-based Nexus CLI installed"
+    log "Docker-based Nexus CLI installation completed"
 }
 
 # Generate configuration files
 generate_config() {
     print_color "$BLUE" "⚙️  Generating configuration files..."
     
-    # Create docker-compose.yml
-    cat > "$WORKDIR/docker-compose.yml" << EOF
-version: '3.8'
-
-services:
-  nexus-node:
-    image: $DOCKER_IMAGE:$NEXUS_VERSION
-    container_name: nexus-node-1
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    environment:
-      - NODE_ENV=production
-      - LOG_LEVEL=info
-    networks:
-      - nexus-network
-
-networks:
-  nexus-network:
-    driver: bridge
-EOF
-
-    # Create .env file
+    # Create environment file for dashboard integration
     cat > "$WORKDIR/.env" << EOF
-# Nexus Node Configuration
-NEXUS_VERSION=$NEXUS_VERSION
-NODE_NAME=nexus-node-1
-NODE_PORT=8080
+# Nexus Network Configuration
+NEXUS_NETWORK=testnet3
+CHAIN_ID=$CHAIN_ID
+RPC_HTTP=$RPC_HTTP
+RPC_WEBSOCKET=$RPC_WEBSOCKET
+EXPLORER_URL=$EXPLORER_URL
+FAUCET_URL=$FAUCET_URL
 
-# Logging
-LOG_LEVEL=info
-LOG_FILE_SIZE=100MB
-LOG_FILE_COUNT=5
+# Paths
+WORKDIR=$WORKDIR
+NEXUS_CONFIG_DIR=$NEXUS_CONFIG_DIR
+CREDENTIALS_FILE=$CREDENTIALS_FILE
 
-# Network
-NETWORK_NAME=nexus-network
+# Installation info
+INSTALL_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+INSTALL_METHOD=$INSTALL_MODE
+CLI_VERSION=latest
 EOF
-
-    # Create startup script
-    cat > "$WORKDIR/start-node.sh" << 'EOF'
+    
+    # Create startup script with mode detection
+    cat > "$WORKDIR/start-nexus.sh" << 'EOF'
 #!/bin/bash
 
-cd "$(dirname "$0")"
+# Nexus Network Startup Script
+set -euo pipefail
 
-echo "Starting Nexus node..."
-docker-compose up -d
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-echo "Waiting for node to start..."
-sleep 10
+echo -e "${GREEN}🚀 Starting Nexus Network CLI...${NC}"
 
-echo "Node status:"
-docker-compose ps
+# Detect installation mode
+INSTALL_MODE="native"
+if [[ -f "$HOME/nexus/.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/nexus/.env" 2>/dev/null || true
+    if [[ "$INSTALL_METHOD" == "docker" ]]; then
+        INSTALL_MODE="docker"
+        echo -e "${BLUE}ℹ️  Using Docker-based Nexus CLI${NC}"
+    fi
+fi
 
-echo "Node logs:"
-docker-compose logs --tail=20 nexus-node
+# Check if nexus-network is available
+if ! command -v nexus-network >/dev/null 2>&1; then
+    echo -e "${RED}❌ nexus-network command not found${NC}"
+    if [[ "$INSTALL_MODE" == "docker" ]]; then
+        echo -e "${YELLOW}Ensure Docker is running and try again${NC}"
+    else
+        echo -e "${YELLOW}Please restart your terminal or run: source ~/.bashrc${NC}"
+    fi
+    exit 1
+fi
+
+# Check if user is registered
+if [[ -f "$HOME/.nexus/credentials.json" ]]; then
+    echo -e "${GREEN}✅ Credentials found, starting node...${NC}"
+    
+    # Test compatibility before starting
+    if nexus-network --help >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Starting Nexus proving...${NC}"
+        nexus-network start
+    else
+        echo -e "${RED}❌ Nexus CLI compatibility issue detected${NC}"
+        echo -e "${YELLOW}This VPS may not support native Nexus CLI${NC}"
+        if [[ "$INSTALL_MODE" != "docker" ]]; then
+            echo -e "${YELLOW}Consider reinstalling with Docker mode${NC}"
+        fi
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}⚠️  No credentials found${NC}"
+    echo -e "${YELLOW}Please register first:${NC}"
+    echo "  nexus-network register-user --wallet-address <your-wallet-address>"
+    echo "  nexus-network register-node"
+    echo "  nexus-network start"
+fi
 EOF
-
-    chmod +x "$WORKDIR/start-node.sh"
+    
+    chmod +x "$WORKDIR/start-nexus.sh"
     
     # Create stop script
-    cat > "$WORKDIR/stop-node.sh" << 'EOF'
+    cat > "$WORKDIR/stop-nexus.sh" << 'EOF'
 #!/bin/bash
 
-cd "$(dirname "$0")"
+# Nexus Network Stop Script
+echo "🛑 Stopping Nexus Network CLI..."
 
-echo "Stopping Nexus node..."
-docker-compose down
-
-echo "Node stopped."
+# Check if nexus-network is available
+if command -v nexus-network >/dev/null 2>&1; then
+    nexus-network stop
+    echo "✅ Nexus Network CLI stopped"
+else
+    echo "❌ nexus-network command not found"
+    exit 1
+fi
 EOF
-
-    chmod +x "$WORKDIR/stop-node.sh"
+    
+    chmod +x "$WORKDIR/stop-nexus.sh"
     
     print_color "$GREEN" "✅ Configuration files generated"
     log "Configuration files created in $WORKDIR"
@@ -269,7 +436,7 @@ setup_wallet() {
     
     case $wallet_option in
         1)
-            print_color "$BLUE" "� Checking for existing credentials..."
+            print_color "$BLUE" "🔍 Checking for existing credentials..."
             if [[ -f "$CREDENTIALS_FILE" ]]; then
                 print_color "$GREEN" "✅ Found existing credentials at $CREDENTIALS_FILE"
                 
@@ -285,8 +452,8 @@ setup_wallet() {
             else
                 print_color "$YELLOW" "⚠️  No existing credentials found at $CREDENTIALS_FILE"
                 print_color "$CYAN" "You'll need to register your user and node after installation:"
-                echo "• Run: nexus register-user"
-                echo "• Run: nexus register-node"
+                echo "• Run: nexus-network register-user --wallet-address <your-wallet-address>"
+                echo "• Run: nexus-network register-node"
             fi
             ;;
         2)
@@ -294,8 +461,8 @@ setup_wallet() {
             mkdir -p "$NEXUS_CONFIG_DIR"
             print_color "$CYAN" "Directory created: $NEXUS_CONFIG_DIR"
             print_color "$CYAN" "After installation, register with:"
-            echo "• nexus register-user"
-            echo "• nexus register-node"
+            echo "• nexus-network register-user --wallet-address <your-wallet-address>"
+            echo "• nexus-network register-node"
             echo "• Credentials will be saved to: $CREDENTIALS_FILE"
             ;;
         3)
@@ -309,155 +476,109 @@ setup_wallet() {
     log "Wallet setup option $wallet_option selected"
 }
 
-# Create systemd service (optional)
-create_service() {
-    print_color "$BLUE" "🔧 Creating systemd service..."
+# Post-installation steps
+post_install() {
+    print_color "$BLUE" "🎯 Completing installation..."
     
-    read -p "Create systemd service for auto-start? (y/N): " -n 1 -r
-    echo
-    
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        sudo tee /etc/systemd/system/nexus-node.service > /dev/null << EOF
-[Unit]
-Description=Nexus Node Service
-After=docker.service
-Requires=docker.service
+    # Create quick access commands
+    cat > "$WORKDIR/nexus-commands.sh" << 'EOF'
+#!/bin/bash
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/start-node.sh
-ExecStop=$WORKDIR/stop-node.sh
-User=$USER
-Group=$USER
-
-[Install]
-WantedBy=multi-user.target
+# Quick Nexus CLI commands
+echo "🚀 Nexus Network CLI Commands:"
+echo
+echo "Registration:"
+echo "  nexus-network register-user --wallet-address <your-wallet-address>"
+echo "  nexus-network register-node"
+echo
+echo "Node operations:"
+echo "  nexus-network start     # Start proving"
+echo "  nexus-network stop      # Stop proving"
+echo "  nexus-network status    # Check status"
+echo "  nexus-network logout    # Clear credentials"
+echo
+echo "Quick scripts:"
+echo "  ./start-nexus.sh        # Start with credential check"
+echo "  ./stop-nexus.sh         # Stop proving"
+echo
+echo "View credentials:"
+echo "  cat ~/.nexus/credentials.json"
 EOF
-
-        sudo systemctl daemon-reload
-        sudo systemctl enable nexus-node.service
-        
-        print_color "$GREEN" "✅ Systemd service created and enabled"
-        log "Systemd service created"
-    else
-        print_color "$CYAN" "Skipping systemd service creation"
+    
+    chmod +x "$WORKDIR/nexus-commands.sh"
+    
+    # Update .bashrc to include nexus in PATH if not already done
+    if ! grep -q "nexus-network" "$HOME/.bashrc" 2>/dev/null; then
+        echo "" >> "$HOME/.bashrc"
+        echo "# Nexus Network CLI" >> "$HOME/.bashrc"
+        echo "export PATH=\"\$HOME/.nexus:\$PATH\"" >> "$HOME/.bashrc"
     fi
+    
+    print_color "$GREEN" "✅ Installation completed successfully!"
+    log "Post-installation completed"
 }
 
-# Verify installation
-verify_installation() {
-    print_color "$BLUE" "🔍 Verifying installation..."
-    
-    local errors=0
-    
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        print_color "$RED" "❌ Docker not found"
-        ((errors++))
-    fi
-    
-    # Check directories
-    if [[ ! -d "$WORKDIR" ]]; then
-        print_color "$RED" "❌ Working directory not found"
-        ((errors++))
-    fi
-    
-    # Check configuration files
-    if [[ ! -f "$WORKDIR/docker-compose.yml" ]]; then
-        print_color "$RED" "❌ Docker compose file not found"
-        ((errors++))
-    fi
-    
-    # Check Docker image
-    if ! docker image inspect "$DOCKER_IMAGE:$NEXUS_VERSION" &> /dev/null; then
-        print_color "$RED" "❌ Docker image not found"
-        ((errors++))
-    fi
-    
-    if [[ $errors -eq 0 ]]; then
-        print_color "$GREEN" "✅ Installation verification passed"
-        log "Installation verification successful"
-        return 0
-    else
-        print_color "$RED" "❌ Installation verification failed ($errors errors)"
-        log "Installation verification failed with $errors errors"
-        return 1
-    fi
-}
-
-# Start the node
-start_node() {
-    print_color "$BLUE" "🚀 Starting Nexus node..."
-    
-    cd "$WORKDIR"
-    
-    if ./start-node.sh; then
-        print_color "$GREEN" "✅ Nexus node started successfully"
-        log "Nexus node started"
-        
-        echo
-        print_color "$CYAN" "Node information:"
-        echo "• Working directory: $WORKDIR"
-        echo "• Container name: nexus-node-1"
-        echo "• Port: 8080"
-        echo "• Status: $(docker ps --filter "name=nexus-node-1" --format "table {{.Status}}" | tail -n +2)"
-        
-    else
-        print_color "$RED" "❌ Failed to start Nexus node"
-        log "ERROR: Failed to start Nexus node"
-        return 1
-    fi
-}
-
-# Main installation process
-main() {
-    print_color "$MAGENTA" "🚀 Nexus V3 Installation Script"
-    print_color "$CYAN" "Author: Rokhanz | Version: 3.0.0"
+# Display completion message
+display_completion() {
     echo
+    print_color "$GREEN" "╔═══════════════════════════════════════════════════════════════╗"
+    print_color "$GREEN" "║                    INSTALLATION COMPLETE! 🎉                 ║"
+    print_color "$GREEN" "╚═══════════════════════════════════════════════════════════════╝"
+    echo
+    print_color "$CYAN" "📍 Installation directory: $WORKDIR"
+    print_color "$CYAN" "📱 Credentials location: $CREDENTIALS_FILE"
+    print_color "$CYAN" "📋 Log file: $LOG_FILE"
+    print_color "$CYAN" "🔧 Installation mode: $INSTALL_MODE"
+    echo
+    print_color "$YELLOW" "Next steps:"
+    echo "1. Restart your terminal or run: source ~/.bashrc"
+    echo "2. Register your wallet: nexus-network register-user --wallet-address <your-address>"
+    echo "3. Register your node: nexus-network register-node"
+    echo "4. Start proving: nexus-network start"
+    echo "5. Or run: $WORKDIR/start-nexus.sh"
+    echo
+    if [[ "$INSTALL_MODE" == "docker" ]]; then
+        print_color "$BLUE" "🐳 Note: Using Docker-based Nexus CLI for VPS compatibility"
+    fi
+    print_color "$BLUE" "📚 Quick reference: $WORKDIR/nexus-commands.sh"
+    print_color "$CYAN" "🌐 Network: Nexus Testnet 3 (Chain ID: $CHAIN_ID)"
+    echo
+}
+
+# Error handler
+cleanup_on_error() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        print_color "$RED" "❌ Installation failed with exit code: $exit_code"
+        log "Installation failed with exit code: $exit_code"
+        
+        print_color "$YELLOW" "Cleaning up partial installation..."
+        # Don't remove directories in case user has other data
+        log "Cleanup completed - directories preserved"
+    fi
+    exit $exit_code
+}
+
+# Main installation function
+main() {
+    trap cleanup_on_error ERR
     
-    log "Starting Nexus V3 installation"
-    
-    # Installation steps
+    display_banner
     check_root
     check_requirements
     install_docker
     create_directories
-    pull_docker_image
+    install_nexus_cli
+    test_nexus_compatibility
     generate_config
     setup_wallet
-    create_service
+    post_install
+    display_completion
     
-    if verify_installation; then
-        print_color "$GREEN" "🎉 Installation completed successfully!"
-        
-        read -p "Start the node now? (Y/n): " -n 1 -r
-        echo
-        
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            start_node
-        fi
-        
-        echo
-        print_color "$CYAN" "📋 Next steps:"
-        echo "• Use './start-node.sh' to start the node"
-        echo "• Use './stop-node.sh' to stop the node"
-        echo "• Check logs with 'docker-compose logs nexus-node'"
-        echo "• Access dashboard at http://localhost:8080"
-        echo "• Use the main dashboard to manage your installation"
-        
-        log "Installation completed successfully"
-        
-    else
-        print_color "$RED" "❌ Installation failed. Check the log file: $LOG_FILE"
-        log "Installation failed"
-        exit 1
-    fi
+    log "Nexus V3 installation completed successfully"
 }
 
-# Error handling
-trap 'print_color "$RED" "❌ Installation interrupted"; log "Installation interrupted"; exit 1' INT TERM
-
-# Run main function
-main "$@"
+# Run main function if script is executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
